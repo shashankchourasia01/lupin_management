@@ -1,0 +1,900 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Diagnostic Center</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script>
+    // Force classic JSX (React.createElement). Automatic runtime injects ESM `import` and crashes.
+    Babel.registerPreset("react-classic", function () {
+      return {
+        presets: [[Babel.availablePresets.react, { runtime: "classic" }]],
+      };
+    });
+  </script>
+  <!-- UMD build required for browser <script> (not ESM) -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.1/dist/umd/supabase.js"></script>
+  <style> body { -webkit-tap-highlight-color: transparent; } </style>
+</head>
+<body class="bg-slate-50">
+  <div id="root"></div>
+
+  <!-- ============================================================
+       STEP 1: apni Supabase details yahan daalo (dono values
+       Supabase > Project Settings > API me milti hain)
+       ============================================================ -->
+  <script>
+    window.SUPABASE_URL = "https://ynrikqfjinobfjgfghwn.supabase.co";
+    window.SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlucmlrcWZqaW5vYmZqZ2ZnaHduIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkyODQzNzksImV4cCI6MjEwNDg2MDM3OX0.bY_qfYh0YPKPpt1TpbyUwMjJl22m3O-8ypqgMEB6u7U";
+  </script>
+
+  <script type="text/babel" data-presets="react-classic">
+    /** @jsxRuntime classic */
+    const { useState, useEffect, useMemo, useRef } = React;
+
+    const CONFIGURED =
+      window.SUPABASE_URL &&
+      !window.SUPABASE_URL.includes("YOUR_") &&
+      window.SUPABASE_ANON_KEY &&
+      !window.SUPABASE_ANON_KEY.includes("YOUR_");
+
+    const db = CONFIGURED
+      ? window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY)
+      : null;
+
+    const money = (n) => "₹" + Number(n || 0).toLocaleString("en-IN");
+    const today = () => new Date().toISOString().slice(0, 10);
+    const inputCls =
+      "w-full px-3 py-2.5 rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-teal-500";
+
+    /* -------------------- data layer (Supabase) -------------------- */
+    async function listPatients() {
+      const { data, error } = await db.from("patients").select("*").order("created_at", { ascending: false });
+      if (error) throw error;
+      return (data || []).map((r) => ({
+        ...r,
+        total: Number(r.total), paid: Number(r.paid), dues: Number(r.dues),
+        payments: r.payments || [],
+      }));
+    }
+    async function insertPatient(rec) {
+      const { data, error } = await db.from("patients").insert(rec).select().single();
+      if (error) throw error;
+      return data;
+    }
+    async function updatePatient(id, patch) {
+      const { data, error } = await db.from("patients").update(patch).eq("id", id).select().single();
+      if (error) throw error;
+      return data;
+    }
+    async function deletePatient(id) {
+      const { error } = await db.from("patients").delete().eq("id", id);
+      if (error) throw error;
+    }
+    async function listUsers() {
+      const { data, error } = await db.from("app_users").select("*");
+      if (error) throw error;
+      const map = {};
+      (data || []).forEach((u) => (map[u.username] = u));
+      return map;
+    }
+    async function upsertUser(u) {
+      const { error } = await db.from("app_users").upsert(u);
+      if (error) throw error;
+    }
+    async function removeUserRow(username) {
+      const { error } = await db.from("app_users").delete().eq("username", username);
+      if (error) throw error;
+    }
+    async function logActivity(a) {
+      try { await db.from("activity").insert(a); } catch (e) {}
+    }
+    async function listActivity() {
+      const { data, error } = await db.from("activity").select("*").order("created_at", { ascending: false }).limit(300);
+      if (error) throw error;
+      return data || [];
+    }
+
+    /* -------------------- notifications (service worker) -------------------- */
+    let SW_REG = null;
+    async function ensureSW() {
+      if (!("serviceWorker" in navigator)) return null;
+      try { SW_REG = await navigator.serviceWorker.register("sw.js"); return SW_REG; }
+      catch (e) { return null; }
+    }
+    async function showSystemNotification(title, body) {
+      try {
+        if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+        let reg = SW_REG;
+        if (!reg && navigator.serviceWorker) { try { reg = await navigator.serviceWorker.ready; } catch (e) {} }
+        if (reg && reg.showNotification) reg.showNotification(title, { body, tag: "dc-" + Date.now() });
+        else new Notification(title, { body }); // desktop fallback
+      } catch (e) {}
+    }
+
+    /* ============================ APP ============================ */
+    function App() {
+      const [session, setSession] = useState(null);
+      const [users, setUsers] = useState({});
+      const [records, setRecords] = useState([]);
+      const [booting, setBooting] = useState(true);
+      const [view, setView] = useState("entry");
+      const [loadErr, setLoadErr] = useState("");
+      const [live, setLive] = useState(false);
+      const [toasts, setToasts] = useState([]);
+      const [notifPerm, setNotifPerm] = useState(typeof Notification !== "undefined" ? Notification.permission : "unsupported");
+      const [notifDismissed, setNotifDismissed] = useState(false);
+      const sessionRef = useRef(null);
+      useEffect(() => { sessionRef.current = session; }, [session]);
+      useEffect(() => { ensureSW(); }, []);
+
+      function pushToast(t) {
+        const id = Date.now() + Math.random();
+        setToasts((arr) => [...arr, { ...t, id }]);
+        setTimeout(() => setToasts((arr) => arr.filter((x) => x.id !== id)), 5500);
+      }
+      function notify(kind, row, amt) {
+        let title, body, tone;
+        if (kind === "entry") {
+          title = "New patient entry";
+          body = `${row.customer_name} · ${row.test_name || ""} (${row.created_by || "staff"})`;
+          tone = "teal";
+        } else {
+          const by = row.payments && row.payments.length ? row.payments[row.payments.length - 1].by : "staff";
+          title = "Due cleared";
+          body = `${row.customer_name} · ${money(amt)} (${by})`;
+          tone = "emerald";
+        }
+        pushToast({ title, body, tone });
+        showSystemNotification(title, body);
+      }
+      async function enableNotifs() {
+        if (typeof Notification === "undefined") { setNotifPerm("unsupported"); return; }
+        await ensureSW();
+        try { const p = await Notification.requestPermission(); setNotifPerm(p); } catch (e) {}
+      }
+
+      async function refreshRecords() {
+        try {
+          setRecords(await listPatients());
+          setLoadErr("");
+        } catch (e) {
+          setLoadErr(e.message || "Data load nahi ho paya.");
+        }
+      }
+      async function reloadUsers() {
+        try { setUsers(await listUsers()); } catch (e) { setLoadErr(e.message); }
+      }
+
+      useEffect(() => {
+        if (!CONFIGURED) { setBooting(false); return; }
+        let channel;
+        (async () => {
+          await reloadUsers();
+          await refreshRecords();
+          setBooting(false);
+          channel = db
+            .channel("realtime-dc")
+            .on("postgres_changes", { event: "INSERT", schema: "public", table: "patients" }, (payload) => {
+              const row = payload.new || {};
+              if (row.created_by && row.created_by !== (sessionRef.current && sessionRef.current.username)) notify("entry", row);
+              refreshRecords();
+            })
+            .on("postgres_changes", { event: "UPDATE", schema: "public", table: "patients" }, (payload) => {
+              const row = payload.new || {}, old = payload.old || {};
+              const inc = Number(row.paid || 0) - Number(old.paid || 0);
+              if (inc > 0) {
+                const by = row.payments && row.payments.length ? row.payments[row.payments.length - 1].by : null;
+                if (by !== (sessionRef.current && sessionRef.current.username)) notify("due", row, inc);
+              }
+              refreshRecords();
+            })
+            .on("postgres_changes", { event: "DELETE", schema: "public", table: "patients" }, () => refreshRecords())
+            .on("postgres_changes", { event: "*", schema: "public", table: "app_users" }, () => reloadUsers())
+            .subscribe((status) => setLive(status === "SUBSCRIBED"));
+        })();
+        return () => { if (channel) db.removeChannel(channel); };
+      }, []);
+
+      if (!CONFIGURED) return <SetupScreen />;
+      if (booting)
+        return <div className="min-h-screen flex items-center justify-center text-slate-500">Connecting…</div>;
+      if (!session) return <Login users={users} onLogin={setSession} err={loadErr} />;
+
+      const isAdmin = session.role === "admin";
+      return (
+        <div className="min-h-screen bg-slate-50 text-slate-800 flex flex-col">
+          <Header session={session} live={live} onLogout={() => setSession(null)} />
+
+          {toasts.length > 0 && (
+            <div className="fixed top-3 inset-x-0 z-40 flex flex-col items-center gap-2 px-3 pointer-events-none">
+              {toasts.map((t) => (
+                <div key={t.id} className={"pointer-events-auto w-full max-w-sm bg-white shadow-lg rounded-xl border-l-4 px-4 py-3 " + (t.tone === "teal" ? "border-teal-500" : "border-emerald-500")}>
+                  <div className="text-sm font-semibold text-slate-800">{t.tone === "teal" ? "🆕 " : "✅ "}{t.title}</div>
+                  <div className="text-xs text-slate-500 mt-0.5">{t.body}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <main className="flex-1 w-full max-w-3xl mx-auto px-4 pb-24 pt-4">
+            {notifPerm === "default" && !notifDismissed && (
+              <div className="mb-4 bg-teal-50 border border-teal-200 text-teal-800 text-sm px-3 py-2.5 rounded-lg flex items-center justify-between gap-2">
+                <span>🔔 Nayi entry / due-clear pe phone notification chahiye?</span>
+                <span className="flex gap-2 shrink-0">
+                  <button onClick={enableNotifs} className="bg-teal-700 text-white px-3 py-1.5 rounded-lg text-xs">Enable</button>
+                  <button onClick={() => setNotifDismissed(true)} className="text-teal-700 text-xs px-1">Later</button>
+                </span>
+              </div>
+            )}
+            {notifPerm === "denied" && !notifDismissed && (
+              <div className="mb-4 bg-amber-50 border border-amber-200 text-amber-800 text-xs px-3 py-2.5 rounded-lg flex items-center justify-between gap-2">
+                <span>Notifications block hain. Phone alert ke liye browser settings me is site ko allow karo. (In-app alerts phir bhi chalenge.)</span>
+                <button onClick={() => setNotifDismissed(true)} className="text-amber-800 px-1">✕</button>
+              </div>
+            )}
+            {loadErr && (
+              <div className="mb-4 bg-red-50 border border-red-200 text-red-700 text-sm px-3 py-2.5 rounded-lg">
+                ⚠️ {loadErr}
+              </div>
+            )}
+            {view === "entry" && <NewEntry session={session} onSaved={refreshRecords} setView={setView} />}
+            {view === "records" && <Records records={records} session={session} refresh={refreshRecords} />}
+            {view === "dashboard" && isAdmin && <Dashboard records={records} />}
+            {view === "activity" && isAdmin && <Activity />}
+            {view === "users" && isAdmin && <ManageUsers users={users} reload={reloadUsers} />}
+          </main>
+          <BottomNav view={view} setView={setView} isAdmin={isAdmin} />
+        </div>
+      );
+    }
+
+    /* -------------------- Setup screen -------------------- */
+    function SetupScreen() {
+      return (
+        <div className="min-h-screen flex items-center justify-center p-4">
+          <div className="max-w-md bg-white border border-slate-200 rounded-2xl p-6 text-sm text-slate-600">
+            <div className="text-3xl mb-2">🔌</div>
+            <h1 className="text-lg font-semibold text-slate-800 mb-2">Supabase connect karna baaki hai</h1>
+            <p className="mb-3">
+              Is file ke top me <code className="bg-slate-100 px-1 rounded">SUPABASE_URL</code> aur{" "}
+              <code className="bg-slate-100 px-1 rounded">SUPABASE_ANON_KEY</code> apni values se replace karo,
+              phir dobara open karo. Details SETUP guide me hain.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    /* -------------------- Header + Nav -------------------- */
+    function Header({ session, live, onLogout }) {
+      return (
+        <header className="bg-teal-800 text-white sticky top-0 z-20 shadow-sm">
+          <div className="max-w-3xl mx-auto px-4 py-3 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center text-lg">🩺</div>
+              <div className="leading-tight">
+                <div className="font-semibold flex items-center gap-1.5">
+                  Diagnostic Center
+                  <span title={live ? "Live sync on" : "Connecting…"}
+                    className={"inline-block w-2 h-2 rounded-full " + (live ? "bg-emerald-400" : "bg-amber-400")}></span>
+                </div>
+                <div className="text-[11px] text-teal-200">{session.name} · {session.role === "admin" ? "Admin" : "Staff"}</div>
+              </div>
+            </div>
+            <button onClick={onLogout} className="text-sm bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-lg">Logout</button>
+          </div>
+        </header>
+      );
+    }
+    function BottomNav({ view, setView, isAdmin }) {
+      const tabs = [
+        { id: "entry", label: "New Entry", icon: "➕" },
+        { id: "records", label: "Records", icon: "📋" },
+      ];
+      if (isAdmin) {
+        tabs.push({ id: "dashboard", label: "Dashboard", icon: "📊" });
+        tabs.push({ id: "activity", label: "Activity", icon: "🕑" });
+        tabs.push({ id: "users", label: "Users", icon: "👥" });
+      }
+      return (
+        <nav className="fixed bottom-0 inset-x-0 bg-white border-t border-slate-200 z-20">
+          <div className="max-w-3xl mx-auto grid" style={{ gridTemplateColumns: `repeat(${tabs.length},1fr)` }}>
+            {tabs.map((t) => (
+              <button key={t.id} onClick={() => setView(t.id)}
+                className={"flex flex-col items-center py-2.5 text-xs gap-0.5 " + (view === t.id ? "text-teal-700 font-medium" : "text-slate-400")}>
+                <span className="text-lg">{t.icon}</span>{t.label}
+              </button>
+            ))}
+          </div>
+        </nav>
+      );
+    }
+
+    /* -------------------- Login -------------------- */
+    function Login({ users, onLogin, err }) {
+      const [u, setU] = useState(""); const [p, setP] = useState(""); const [e, setE] = useState("");
+      function submit() {
+        const key = u.trim().toLowerCase();
+        const found = users[key];
+        if (!found || found.password !== p) { setE("Galat username ya password."); return; }
+        onLogin({ username: key, role: found.role, name: found.name });
+      }
+      return (
+        <div className="min-h-screen bg-teal-800 flex items-center justify-center px-4">
+          <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl p-7">
+            <div className="text-center mb-6">
+              <div className="w-14 h-14 mx-auto rounded-2xl bg-teal-100 flex items-center justify-center text-3xl mb-3">🩺</div>
+              <h1 className="text-xl font-bold text-slate-800">Diagnostic Center</h1>
+              <p className="text-sm text-slate-500">Sign in to continue</p>
+            </div>
+            <label className="block text-sm font-medium text-slate-600 mb-1">Username</label>
+            <input value={u} onChange={(ev) => setU(ev.target.value)} className={inputCls + " mb-3"} placeholder="admin / user1" />
+            <label className="block text-sm font-medium text-slate-600 mb-1">Password</label>
+            <input type="password" value={p} onChange={(ev) => setP(ev.target.value)} onKeyDown={(ev) => ev.key === "Enter" && submit()} className={inputCls + " mb-3"} placeholder="••••••••" />
+            {(e || err) && <p className="text-sm text-red-600 mb-3">{e || err}</p>}
+            <button onClick={submit} className="w-full bg-teal-700 hover:bg-teal-800 text-white font-medium py-2.5 rounded-lg">Sign in</button>
+            <div className="mt-5 text-xs text-slate-400 bg-slate-50 rounded-lg p-3 leading-relaxed">
+              Default — Admin: <b>admin / admin@123</b><br/>Staff: <b>user1…user5 / user@123</b>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    /* -------------------- Field helper -------------------- */
+    function Field({ label, children, required }) {
+      return (
+        <label className="block">
+          <span className="text-sm font-medium text-slate-600">{label} {required && <span className="text-red-500">*</span>}</span>
+          <div className="mt-1">{children}</div>
+        </label>
+      );
+    }
+
+    /* -------------------- New Entry -------------------- */
+    function NewEntry({ session, onSaved, setView }) {
+      const blank = { date: today(), customer_name: "", age: "", sex: "", mobile: "", test_name: "", referred_by: "", total: "", advance: "", mode: "Cash", address: "" };
+      const [f, setF] = useState(blank);
+      const [saving, setSaving] = useState(false);
+      const [okMsg, setOkMsg] = useState(""); const [err, setErr] = useState("");
+      const [count, setCount] = useState(0);
+      const dues = Math.max(0, Number(f.total || 0) - Number(f.advance || 0));
+      const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+
+      function validate() {
+        if (!f.customer_name.trim()) return "Customer name daaliye.";
+        if (!f.age || Number(f.age) <= 0) return "Sahi age daaliye.";
+        if (!f.sex) return "Sex select kariye.";
+        if (!/^\d{10}$/.test(f.mobile)) return "Mobile number 10 digit ka hona chahiye.";
+        if (!f.test_name.trim()) return "Test name daaliye.";
+        if (!f.total || Number(f.total) <= 0) return "Total amount daaliye.";
+        if (Number(f.advance || 0) > Number(f.total)) return "Advance total se zyada nahi ho sakta.";
+        return "";
+      }
+
+      async function save() {
+        setOkMsg("");
+        const v = validate();
+        if (v) { setErr(v); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
+        setErr(""); setSaving(true);
+        const adv = Number(f.advance || 0); const total = Number(f.total);
+        const payments = adv > 0 ? [{ amount: adv, date: f.date, mode: f.mode, by: session.username, note: "Advance" }] : [];
+        const rec = {
+          date: f.date, customer_name: f.customer_name.trim(), age: Number(f.age), sex: f.sex,
+          mobile: f.mobile, test_name: f.test_name.trim(), referred_by: f.referred_by.trim(),
+          address: f.address.trim(), total, paid: adv, dues: total - adv, mode: f.mode,
+          payments, status: total - adv <= 0 ? "Paid" : "Pending", created_by: session.username,
+        };
+        try {
+          const saved = await insertPatient(rec);
+          logActivity({
+            username: session.username, user_name: session.name, action: "entry",
+            bill_no: saved.bill_no, patient_name: rec.customer_name,
+            detail: "Total " + money(total) + (adv > 0 ? ", advance " + money(adv) : ""), amount: total,
+          });
+          await onSaved();
+          setF(blank); setCount((c) => c + 1); setOkMsg(saved.bill_no || "Saved");
+        } catch (e) {
+          setErr("Save nahi ho paya: " + (e.message || "network error"));
+        } finally {
+          setSaving(false); window.scrollTo({ top: 0, behavior: "smooth" });
+        }
+      }
+
+      return (
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <h2 className="text-lg font-semibold">New Patient Entry</h2>
+            {count > 0 && <span className="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded-full">{count} saved</span>}
+          </div>
+          <p className="text-sm text-slate-500 mb-4">Bill number auto-generate ho jayega.</p>
+
+          {err && <div className="mb-4 bg-red-50 border border-red-200 text-red-700 text-sm px-3 py-3 rounded-lg font-medium">⚠️ {err}</div>}
+          {okMsg && (
+            <div className="mb-4 bg-emerald-50 border border-emerald-300 text-emerald-800 text-sm px-3 py-3 rounded-lg flex items-center justify-between">
+              <span>✅ <b>{okMsg}</b> saved.</span>
+              <button className="ml-3 shrink-0 bg-emerald-600 text-white px-3 py-1.5 rounded-lg" onClick={() => setView("records")}>View</button>
+            </div>
+          )}
+
+          <div className="bg-white rounded-2xl border border-slate-200 p-4 space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Date"><input type="date" value={f.date} onChange={set("date")} className={inputCls} /></Field>
+              <Field label="Mobile No" required><input inputMode="numeric" maxLength={10} value={f.mobile} onChange={set("mobile")} className={inputCls} placeholder="10 digit" /></Field>
+            </div>
+            <Field label="Customer Name" required><input value={f.customer_name} onChange={set("customer_name")} className={inputCls} /></Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Age" required><input inputMode="numeric" value={f.age} onChange={set("age")} className={inputCls} /></Field>
+              <Field label="Sex" required>
+                <select value={f.sex} onChange={set("sex")} className={inputCls}>
+                  <option value="">Select</option><option>Male</option><option>Female</option><option>Other</option>
+                </select>
+              </Field>
+            </div>
+            <Field label="Test Name" required><input value={f.test_name} onChange={set("test_name")} className={inputCls} placeholder="e.g. CBC, Lipid Profile" /></Field>
+            <Field label="Referred By (Doctor)"><input value={f.referred_by} onChange={set("referred_by")} className={inputCls} /></Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Total Amount" required><input inputMode="numeric" value={f.total} onChange={set("total")} className={inputCls} /></Field>
+              <Field label="Advance Paid"><input inputMode="numeric" value={f.advance} onChange={set("advance")} className={inputCls} /></Field>
+            </div>
+            <div className="flex items-center justify-between bg-slate-50 rounded-lg px-3 py-2.5">
+              <span className="text-sm text-slate-600">Dues (auto)</span>
+              <span className={"font-semibold tabular-nums " + (dues > 0 ? "text-amber-600" : "text-emerald-600")}>{money(dues)}</span>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Payment Mode">
+                <select value={f.mode} onChange={set("mode")} className={inputCls}><option>Cash</option><option>UPI</option><option>Card</option></select>
+              </Field>
+              <Field label="Address"><input value={f.address} onChange={set("address")} className={inputCls} /></Field>
+            </div>
+            <button onClick={save} disabled={saving} className="w-full bg-teal-700 hover:bg-teal-800 disabled:opacity-60 text-white font-medium py-3 rounded-lg">
+              {saving ? "Saving…" : "Save Entry"}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    /* -------------------- Records -------------------- */
+    function Records({ records, session, refresh }) {
+      const isAdmin = session.role === "admin";
+      const [q, setQ] = useState(""); const [filter, setFilter] = useState("all"); const [active, setActive] = useState(null);
+      const filtered = useMemo(() => {
+        const term = q.trim().toLowerCase();
+        return records.filter((r) => {
+          const matchQ = !term || (r.customer_name || "").toLowerCase().includes(term) || (r.mobile || "").includes(term) || (r.bill_no || "").toLowerCase().includes(term);
+          const matchF = filter === "all" ? true : filter === "pending" ? r.dues > 0 : filter === "paid" ? r.dues <= 0 : filter === "today" ? r.date === today() : true;
+          return matchQ && matchF;
+        });
+      }, [records, q, filter]);
+      const chips = [{ id: "all", label: "All" }, { id: "pending", label: "Pending" }, { id: "paid", label: "Paid" }, { id: "today", label: "Today" }];
+
+      function exportCSV() {
+        const head = ["Bill", "Date", "Name", "Age", "Sex", "Mobile", "Test", "Referred By", "Total", "Paid", "Dues", "Status", "Entered By"];
+        const rows = records.map((r) => [r.bill_no, r.date, r.customer_name, r.age, r.sex, r.mobile, r.test_name, r.referred_by, r.total, r.paid, r.dues, r.status, r.created_by]);
+        const csv = [head, ...rows].map((row) => row.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
+        const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+        const a = document.createElement("a"); a.href = url; a.download = "diagnostic-records.csv"; a.click(); URL.revokeObjectURL(url);
+      }
+
+      return (
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold">Records ({records.length})</h2>
+            <div className="flex gap-2">
+              <button onClick={refresh} className="text-sm text-slate-600 border border-slate-200 bg-white px-3 py-1.5 rounded-lg">↻ Refresh</button>
+              {isAdmin && <button onClick={exportCSV} className="text-sm text-teal-700 border border-teal-200 bg-teal-50 px-3 py-1.5 rounded-lg">Export CSV</button>}
+            </div>
+          </div>
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name / mobile / bill no" className={inputCls + " mb-3"} />
+          <div className="flex gap-2 mb-4 overflow-x-auto">
+            {chips.map((c) => (
+              <button key={c.id} onClick={() => setFilter(c.id)}
+                className={"px-3 py-1.5 rounded-full text-sm whitespace-nowrap border " + (filter === c.id ? "bg-teal-700 text-white border-teal-700" : "bg-white text-slate-600 border-slate-200")}>{c.label}</button>
+            ))}
+          </div>
+          {filtered.length === 0 ? (
+            <div className="text-center text-slate-400 py-16 text-sm">Koi record nahi mila.</div>
+          ) : (
+            <div className="space-y-2.5">
+              {filtered.map((r) => (
+                <button key={r.id} onClick={() => setActive(r)} className="w-full text-left bg-white rounded-xl border border-slate-200 p-3.5 hover:border-teal-300">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-medium text-slate-800 truncate">{r.customer_name}</div>
+                      <div className="text-xs text-slate-500 mt-0.5">{r.bill_no} · {r.test_name} · {r.mobile}</div>
+                      <div className="text-xs text-slate-400 mt-0.5">{r.date} · {r.age}/{(r.sex || "-")[0]}</div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="text-sm font-semibold tabular-nums">{money(r.total)}</div>
+                      <span className={"inline-block mt-1 text-[11px] px-2 py-0.5 rounded-full " + (r.dues > 0 ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700")}>
+                        {r.dues > 0 ? "Due " + money(r.dues) : "Paid"}
+                      </span>
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+          {active && <RecordDetail record={active} session={session} onClose={() => setActive(null)} refresh={refresh} />}
+        </div>
+      );
+    }
+
+    /* -------------------- Record detail / clear / edit -------------------- */
+    function Info({ k, v }) { return (<div><div className="text-xs text-slate-400">{k}</div><div className="text-slate-700">{v}</div></div>); }
+
+    function RecordDetail({ record, session, onClose, refresh }) {
+      const isAdmin = session.role === "admin";
+      const [rec, setRec] = useState(record);
+      const [mode, setMode] = useState("view");
+      const [busy, setBusy] = useState(false);
+      const [payAmt, setPayAmt] = useState(""); const [payMode, setPayMode] = useState("Cash"); const [payErr, setPayErr] = useState("");
+      const [ef, setEf] = useState(rec);
+      const setE = (k) => (e) => setEf({ ...ef, [k]: e.target.value });
+
+      async function clearDue() {
+        const amt = Number(payAmt || 0);
+        if (amt <= 0) return setPayErr("Amount daaliye.");
+        if (amt > rec.dues) return setPayErr("Dues se zyada nahi (" + money(rec.dues) + ").");
+        setBusy(true);
+        const patch = {
+          paid: rec.paid + amt, dues: rec.dues - amt,
+          payments: [...(rec.payments || []), { amount: amt, date: today(), mode: payMode, by: session.username, note: "Due cleared" }],
+          status: rec.dues - amt <= 0 ? "Paid" : "Pending",
+        };
+        try {
+          const updated = await updatePatient(rec.id, patch);
+          logActivity({
+            username: session.username, user_name: session.name, action: "due_clear",
+            bill_no: rec.bill_no, patient_name: rec.customer_name,
+            detail: money(amt) + " via " + payMode, amount: amt,
+          });
+          setRec({ ...updated, total: Number(updated.total), paid: Number(updated.paid), dues: Number(updated.dues), payments: updated.payments || [] });
+          await refresh(); setMode("view"); setPayAmt(""); setPayErr("");
+        } catch (e) { setPayErr(e.message); } finally { setBusy(false); }
+      }
+
+      async function saveEdit() {
+        const total = Number(ef.total || 0); const dues = Math.max(0, total - rec.paid);
+        const patch = {
+          customer_name: ef.customer_name.trim(), age: Number(ef.age), sex: ef.sex, mobile: ef.mobile,
+          test_name: ef.test_name.trim(), referred_by: (ef.referred_by || "").trim(), address: (ef.address || "").trim(),
+          date: ef.date, total, dues, status: dues <= 0 ? "Paid" : "Pending",
+        };
+        setBusy(true);
+        try {
+          const updated = await updatePatient(rec.id, patch);
+          logActivity({
+            username: session.username, user_name: session.name, action: "edit",
+            bill_no: rec.bill_no, patient_name: patch.customer_name,
+            detail: "Edited details · total " + money(total), amount: total,
+          });
+          setRec({ ...updated, total: Number(updated.total), paid: Number(updated.paid), dues: Number(updated.dues), payments: updated.payments || [] });
+          await refresh(); setMode("view");
+        } catch (e) { alert(e.message); } finally { setBusy(false); }
+      }
+
+      async function del() {
+        if (!confirm("Is patient ka record delete karna hai? Ye wapas nahi aayega.")) return;
+        setBusy(true);
+        try {
+          await deletePatient(rec.id);
+          logActivity({
+            username: session.username, user_name: session.name, action: "delete",
+            bill_no: rec.bill_no, patient_name: rec.customer_name,
+            detail: "Record deleted", amount: null,
+          });
+          await refresh(); onClose();
+        }
+        catch (e) { alert(e.message); setBusy(false); }
+      }
+
+      return (
+        <div className="fixed inset-0 bg-black/40 z-30 flex items-end sm:items-center justify-center sm:p-4">
+          <div className="bg-white w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl max-h-[92vh] overflow-y-auto">
+            <div className="sticky top-0 bg-white border-b border-slate-100 px-4 py-3 flex items-center justify-between">
+              <div><div className="font-semibold">{rec.customer_name}</div><div className="text-xs text-slate-500">{rec.bill_no}</div></div>
+              <button onClick={onClose} className="text-slate-400 text-xl px-2">✕</button>
+            </div>
+            <div className="p-4">
+              {mode === "view" && (
+                <React.Fragment>
+                  <div className="grid grid-cols-2 gap-y-3 gap-x-4 text-sm mb-4">
+                    <Info k="Date" v={rec.date} /><Info k="Mobile" v={rec.mobile} />
+                    <Info k="Age / Sex" v={rec.age + " / " + rec.sex} /><Info k="Test" v={rec.test_name} />
+                    {rec.referred_by && <Info k="Referred By" v={rec.referred_by} />}
+                    {rec.address && <Info k="Address" v={rec.address} />}
+                    <Info k="Entered By" v={rec.created_by} />
+                  </div>
+                  <div className="bg-slate-50 rounded-xl p-3 grid grid-cols-3 text-center mb-4">
+                    <div><div className="text-xs text-slate-500">Total</div><div className="font-semibold tabular-nums">{money(rec.total)}</div></div>
+                    <div><div className="text-xs text-slate-500">Paid</div><div className="font-semibold tabular-nums text-emerald-600">{money(rec.paid)}</div></div>
+                    <div><div className="text-xs text-slate-500">Dues</div><div className={"font-semibold tabular-nums " + (rec.dues > 0 ? "text-amber-600" : "text-slate-400")}>{money(rec.dues)}</div></div>
+                  </div>
+                  {(rec.payments || []).length > 0 && (
+                    <div className="mb-4">
+                      <div className="text-xs font-medium text-slate-500 mb-1.5">Payment history</div>
+                      <div className="space-y-1">
+                        {rec.payments.map((p, i) => (
+                          <div key={i} className="flex justify-between text-sm bg-white border border-slate-100 rounded-lg px-3 py-1.5">
+                            <span className="text-slate-500">{p.date} · {p.mode} · {p.note}</span>
+                            <span className="tabular-nums font-medium">{money(p.amount)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <div className="space-y-2">
+                    {rec.dues > 0 && <button onClick={() => setMode("clear")} className="w-full bg-teal-700 hover:bg-teal-800 text-white font-medium py-2.5 rounded-lg">Clear Dues</button>}
+                    {isAdmin && (
+                      <div className="grid grid-cols-2 gap-2">
+                        <button onClick={() => { setEf(rec); setMode("edit"); }} className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium py-2.5 rounded-lg">Edit</button>
+                        <button onClick={del} disabled={busy} className="bg-red-50 hover:bg-red-100 text-red-600 font-medium py-2.5 rounded-lg">Delete</button>
+                      </div>
+                    )}
+                  </div>
+                </React.Fragment>
+              )}
+
+              {mode === "clear" && (
+                <React.Fragment>
+                  <div className="mb-3 text-sm text-slate-600">Pending dues: <b className="text-amber-600">{money(rec.dues)}</b></div>
+                  <Field label="Amount received" required><input inputMode="numeric" value={payAmt} onChange={(e) => setPayAmt(e.target.value)} className={inputCls} /></Field>
+                  <div className="mt-3" />
+                  <Field label="Payment mode"><select value={payMode} onChange={(e) => setPayMode(e.target.value)} className={inputCls}><option>Cash</option><option>UPI</option><option>Card</option></select></Field>
+                  {payErr && <p className="text-sm text-red-600 mt-2">{payErr}</p>}
+                  <div className="grid grid-cols-2 gap-2 mt-4">
+                    <button onClick={() => setMode("view")} className="bg-slate-100 py-2.5 rounded-lg font-medium">Cancel</button>
+                    <button onClick={clearDue} disabled={busy} className="bg-teal-700 text-white py-2.5 rounded-lg font-medium disabled:opacity-60">{busy ? "…" : "Record Payment"}</button>
+                  </div>
+                </React.Fragment>
+              )}
+
+              {mode === "edit" && (
+                <React.Fragment>
+                  <div className="space-y-3">
+                    <Field label="Customer Name"><input value={ef.customer_name} onChange={setE("customer_name")} className={inputCls} /></Field>
+                    <div className="grid grid-cols-2 gap-3">
+                      <Field label="Age"><input value={ef.age} onChange={setE("age")} className={inputCls} /></Field>
+                      <Field label="Sex"><select value={ef.sex} onChange={setE("sex")} className={inputCls}><option>Male</option><option>Female</option><option>Other</option></select></Field>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <Field label="Mobile"><input value={ef.mobile} onChange={setE("mobile")} className={inputCls} /></Field>
+                      <Field label="Date"><input type="date" value={ef.date} onChange={setE("date")} className={inputCls} /></Field>
+                    </div>
+                    <Field label="Test Name"><input value={ef.test_name} onChange={setE("test_name")} className={inputCls} /></Field>
+                    <Field label="Referred By"><input value={ef.referred_by || ""} onChange={setE("referred_by")} className={inputCls} /></Field>
+                    <Field label="Total Amount"><input value={ef.total} onChange={setE("total")} className={inputCls} /></Field>
+                    <p className="text-xs text-slate-400">Paid ({money(rec.paid)}) fixed rahega; dues auto recalc hoga.</p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 mt-4">
+                    <button onClick={() => setMode("view")} className="bg-slate-100 py-2.5 rounded-lg font-medium">Cancel</button>
+                    <button onClick={saveEdit} disabled={busy} className="bg-teal-700 text-white py-2.5 rounded-lg font-medium disabled:opacity-60">{busy ? "…" : "Save Changes"}</button>
+                  </div>
+                </React.Fragment>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    /* -------------------- Dashboard -------------------- */
+    function Dashboard({ records }) {
+      const s = useMemo(() => {
+        const total = records.reduce((a, r) => a + r.total, 0);
+        const collected = records.reduce((a, r) => a + r.paid, 0);
+        const pending = records.reduce((a, r) => a + r.dues, 0);
+        const todayCount = records.filter((r) => r.date === today()).length;
+        const pendingCount = records.filter((r) => r.dues > 0).length;
+        return { total, collected, pending, todayCount, pendingCount };
+      }, [records]);
+      const cards = [
+        { label: "Total Patients", value: records.length, tone: "text-slate-800" },
+        { label: "Today's Entries", value: s.todayCount, tone: "text-teal-700" },
+        { label: "Total Collected", value: money(s.collected), tone: "text-emerald-600" },
+        { label: "Pending Dues", value: money(s.pending), tone: "text-amber-600" },
+      ];
+      return (
+        <div>
+          <h2 className="text-lg font-semibold mb-4">Dashboard</h2>
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            {cards.map((c) => (
+              <div key={c.label} className="bg-white border border-slate-200 rounded-xl p-4">
+                <div className="text-xs text-slate-500">{c.label}</div>
+                <div className={"text-xl font-bold mt-1 tabular-nums " + c.tone}>{c.value}</div>
+              </div>
+            ))}
+          </div>
+          <div className="bg-white border border-slate-200 rounded-xl p-4 text-sm text-slate-600">
+            <div className="flex justify-between py-1"><span>Total billed value</span><span className="tabular-nums font-medium">{money(s.total)}</span></div>
+            <div className="flex justify-between py-1"><span>Patients with pending dues</span><span className="tabular-nums font-medium">{s.pendingCount}</span></div>
+          </div>
+        </div>
+      );
+    }
+
+    /* -------------------- Activity Log -------------------- */
+    const ACT_META = {
+      entry:     { label: "New entry",   cls: "bg-teal-100 text-teal-700" },
+      due_clear: { label: "Due cleared", cls: "bg-emerald-100 text-emerald-700" },
+      edit:      { label: "Edited",      cls: "bg-amber-100 text-amber-700" },
+      delete:    { label: "Deleted",     cls: "bg-red-100 text-red-700" },
+    };
+    function fmtTime(iso) { try { return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); } catch (e) { return ""; } }
+    function fmtDay(iso)  { try { return new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }); } catch (e) { return ""; } }
+
+    function Activity() {
+      const [rows, setRows] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [action, setAction] = useState("all");
+      const [user, setUser] = useState("all");
+      const [err, setErr] = useState("");
+
+      async function load() {
+        try { setRows(await listActivity()); setErr(""); }
+        catch (e) { setErr(e.message || "Load failed"); }
+        finally { setLoading(false); }
+      }
+      useEffect(() => {
+        load();
+        const ch = db.channel("realtime-activity")
+          .on("postgres_changes", { event: "INSERT", schema: "public", table: "activity" }, (payload) => {
+            setRows((r) => [payload.new, ...r]);
+          }).subscribe();
+        return () => { db.removeChannel(ch); };
+      }, []);
+
+      const users = useMemo(() => Array.from(new Set(rows.map((r) => r.username).filter(Boolean))), [rows]);
+      const filtered = rows.filter((r) => (action === "all" || r.action === action) && (user === "all" || r.username === user));
+
+      const groups = [];
+      let cur = null;
+      filtered.forEach((r) => {
+        const day = fmtDay(r.created_at);
+        if (!cur || cur.day !== day) { cur = { day, items: [] }; groups.push(cur); }
+        cur.items.push(r);
+      });
+
+      function exportCSV() {
+        const head = ["Date", "Time", "User", "Username", "Action", "Bill", "Patient", "Detail", "Amount"];
+        const body = filtered.map((r) => [fmtDay(r.created_at), fmtTime(r.created_at), r.user_name, r.username, (ACT_META[r.action] || {}).label || r.action, r.bill_no, r.patient_name, r.detail, r.amount]);
+        const csv = [head, ...body].map((row) => row.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
+        const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+        const a = document.createElement("a"); a.href = url; a.download = "activity-log.csv"; a.click(); URL.revokeObjectURL(url);
+      }
+
+      const chips = [
+        { id: "all", label: "All" },
+        { id: "entry", label: "Entries" },
+        { id: "due_clear", label: "Dues" },
+        { id: "edit", label: "Edits" },
+        { id: "delete", label: "Deletes" },
+      ];
+
+      return (
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold">Activity Log</h2>
+            <div className="flex gap-2">
+              <button onClick={load} className="text-sm text-slate-600 border border-slate-200 bg-white px-3 py-1.5 rounded-lg">↻</button>
+              <button onClick={exportCSV} className="text-sm text-teal-700 border border-teal-200 bg-teal-50 px-3 py-1.5 rounded-lg">Export</button>
+            </div>
+          </div>
+
+          <div className="flex gap-2 mb-3 overflow-x-auto">
+            {chips.map((c) => (
+              <button key={c.id} onClick={() => setAction(c.id)}
+                className={"px-3 py-1.5 rounded-full text-sm whitespace-nowrap border " + (action === c.id ? "bg-teal-700 text-white border-teal-700" : "bg-white text-slate-600 border-slate-200")}>{c.label}</button>
+            ))}
+          </div>
+
+          <select value={user} onChange={(e) => setUser(e.target.value)} className={inputCls + " mb-4"}>
+            <option value="all">All users</option>
+            {users.map((u) => <option key={u} value={u}>{u}</option>)}
+          </select>
+
+          {err && <div className="mb-3 bg-red-50 border border-red-200 text-red-700 text-sm px-3 py-2.5 rounded-lg">⚠️ {err}</div>}
+
+          {loading ? (
+            <div className="text-center text-slate-400 py-16 text-sm">Loading…</div>
+          ) : filtered.length === 0 ? (
+            <div className="text-center text-slate-400 py-16 text-sm">Koi activity nahi mili.</div>
+          ) : (
+            groups.map((g) => (
+              <div key={g.day} className="mb-4">
+                <div className="text-xs font-medium text-slate-400 mb-2 sticky top-14 bg-slate-50 py-1">{g.day}</div>
+                <div className="space-y-2">
+                  {g.items.map((r) => {
+                    const m = ACT_META[r.action] || { label: r.action, cls: "bg-slate-100 text-slate-600" };
+                    return (
+                      <div key={r.id} className="bg-white border border-slate-200 rounded-xl p-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className={"text-[11px] px-2 py-0.5 rounded-full " + m.cls}>{m.label}</span>
+                              <span className="text-xs text-slate-400">{fmtTime(r.created_at)}</span>
+                            </div>
+                            <div className="text-sm font-medium text-slate-800 mt-1 truncate">
+                              {r.patient_name} {r.bill_no && <span className="text-slate-400 font-normal">· {r.bill_no}</span>}
+                            </div>
+                            {r.detail && <div className="text-xs text-slate-500 mt-0.5">{r.detail}</div>}
+                          </div>
+                          <div className="text-right shrink-0">
+                            <div className="text-xs font-medium text-slate-700">{r.user_name || r.username}</div>
+                            <div className="text-[11px] text-slate-400">{r.username}</div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      );
+    }
+
+    /* -------------------- Manage Users -------------------- */
+    function ManageUsers({ users, reload }) {
+      const [newU, setNewU] = useState(""); const [newP, setNewP] = useState(""); const [newName, setNewName] = useState(""); const [msg, setMsg] = useState("");
+      const list = Object.entries(users);
+      async function resetPassword(uname) {
+        const np = prompt("New password for " + uname + ":"); if (!np) return;
+        await upsertUser({ ...users[uname], password: np }); await reload(); setMsg("Password updated for " + uname); setTimeout(() => setMsg(""), 3000);
+      }
+      async function removeUser(uname) {
+        if (uname === "admin") return; if (!confirm("Remove " + uname + "?")) return;
+        await removeUserRow(uname); await reload();
+      }
+      async function addUser() {
+        const key = newU.trim().toLowerCase();
+        if (!key || !newP) return setMsg("Username aur password dono chahiye.");
+        if (users[key]) return setMsg("Ye username already exist karta hai.");
+        await upsertUser({ username: key, password: newP, role: "user", name: newName.trim() || key });
+        await reload(); setNewU(""); setNewP(""); setNewName(""); setMsg("Staff user added."); setTimeout(() => setMsg(""), 3000);
+      }
+      return (
+        <div>
+          <h2 className="text-lg font-semibold mb-4">Manage Users</h2>
+          {msg && <div className="mb-3 text-sm text-teal-700 bg-teal-50 rounded-lg px-3 py-2">{msg}</div>}
+          <div className="space-y-2 mb-6">
+            {list.map(([uname, u]) => (
+              <div key={uname} className="bg-white border border-slate-200 rounded-xl p-3 flex items-center justify-between">
+                <div>
+                  <div className="font-medium">{uname}{" "}
+                    <span className={"text-[11px] px-2 py-0.5 rounded-full " + (u.role === "admin" ? "bg-teal-100 text-teal-700" : "bg-slate-100 text-slate-500")}>{u.role}</span>
+                  </div>
+                  <div className="text-xs text-slate-400">{u.name}</div>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => resetPassword(uname)} className="text-xs text-teal-700 border border-teal-200 px-2.5 py-1 rounded-lg">Password</button>
+                  {uname !== "admin" && <button onClick={() => removeUser(uname)} className="text-xs text-red-600 border border-red-200 px-2.5 py-1 rounded-lg">Remove</button>}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="bg-white border border-slate-200 rounded-xl p-4">
+            <div className="font-medium mb-3 text-sm">Add staff user</div>
+            <div className="space-y-3">
+              <input value={newU} onChange={(e) => setNewU(e.target.value)} placeholder="Username" className={inputCls} />
+              <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Display name" className={inputCls} />
+              <input value={newP} onChange={(e) => setNewP(e.target.value)} placeholder="Password" className={inputCls} />
+              <button onClick={addUser} className="w-full bg-teal-700 text-white py-2.5 rounded-lg font-medium">Add User</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "name": "diagnostic-center",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Diagnostic Center management app (static React + Supabase)",
+  "scripts": {
+    "start": "npx --yes serve . -p 3000",
+    "dev": "npx --yes serve . -p 3000"
+  }
+}
