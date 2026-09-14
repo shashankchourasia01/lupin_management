@@ -51,6 +51,17 @@
     const inputCls =
       "w-full px-3 py-2.5 rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-teal-500";
 
+    const REPORT_OPTIONS = ["Report Pending", "Report Generated", "Report Send"];
+    function normalizeReport(v) {
+      return REPORT_OPTIONS.includes(v) ? v : "Report Pending";
+    }
+    function reportBadgeClass(v) {
+      const s = normalizeReport(v);
+      if (s === "Report Generated") return "bg-sky-100 text-sky-700";
+      if (s === "Report Send") return "bg-emerald-100 text-emerald-700";
+      return "bg-amber-100 text-amber-700";
+    }
+
     /* -------------------- data layer (Supabase) -------------------- */
     async function listPatients() {
       const { data, error } = await db.from("patients").select("*").order("created_at", { ascending: false });
@@ -59,6 +70,7 @@
         ...r,
         total: Number(r.total), paid: Number(r.paid), dues: Number(r.dues),
         payments: r.payments || [],
+        report_status: normalizeReport(r.report_status),
       }));
     }
     async function insertPatient(rec) {
@@ -358,7 +370,7 @@
 
     /* -------------------- New Entry -------------------- */
     function NewEntry({ session, onSaved, setView }) {
-      const blank = { date: today(), customer_name: "", age: "", sex: "", mobile: "", test_name: "", referred_by: "", total: "", advance: "", mode: "Cash", address: "" };
+      const blank = { date: today(), customer_name: "", age: "", sex: "", mobile: "", test_name: "", referred_by: "", total: "", advance: "", mode: "Cash", address: "", report_status: "Report Pending" };
       const [f, setF] = useState(blank);
       const [saving, setSaving] = useState(false);
       const [okMsg, setOkMsg] = useState(""); const [err, setErr] = useState("");
@@ -388,7 +400,9 @@
           date: f.date, customer_name: f.customer_name.trim(), age: Number(f.age), sex: f.sex,
           mobile: f.mobile, test_name: f.test_name.trim(), referred_by: f.referred_by.trim(),
           address: f.address.trim(), total, paid: adv, dues: total - adv, mode: f.mode,
-          payments, status: total - adv <= 0 ? "Paid" : "Pending", created_by: session.username,
+          payments, status: total - adv <= 0 ? "Paid" : "Pending",
+          report_status: normalizeReport(f.report_status),
+          created_by: session.username,
         };
         try {
           const saved = await insertPatient(rec);
@@ -452,6 +466,11 @@
               </Field>
               <Field label="Address"><input value={f.address} onChange={set("address")} className={inputCls} /></Field>
             </div>
+            <Field label="Report Status">
+              <select value={f.report_status} onChange={set("report_status")} className={inputCls}>
+                {REPORT_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+              </select>
+            </Field>
             <button onClick={save} disabled={saving} className="w-full bg-teal-700 hover:bg-teal-800 disabled:opacity-60 text-white font-medium py-3 rounded-lg">
               {saving ? "Saving…" : "Save Entry"}
             </button>
@@ -475,8 +494,8 @@
       const chips = [{ id: "all", label: "All" }, { id: "pending", label: "Pending" }, { id: "paid", label: "Paid" }, { id: "today", label: "Today" }];
 
       function exportCSV() {
-        const head = ["Bill", "Date", "Name", "Age", "Sex", "Mobile", "Test", "Referred By", "Total", "Paid", "Dues", "Status", "Entered By"];
-        const rows = records.map((r) => [r.bill_no, r.date, r.customer_name, r.age, r.sex, r.mobile, r.test_name, r.referred_by, r.total, r.paid, r.dues, r.status, r.created_by]);
+        const head = ["Bill", "Date", "Name", "Age", "Sex", "Mobile", "Test", "Referred By", "Total", "Paid", "Dues", "Status", "Report", "Entered By"];
+        const rows = records.map((r) => [r.bill_no, r.date, r.customer_name, r.age, r.sex, r.mobile, r.test_name, r.referred_by, r.total, r.paid, r.dues, r.status, normalizeReport(r.report_status), r.created_by]);
         const csv = [head, ...rows].map((row) => row.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
         const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
         const a = document.createElement("a"); a.href = url; a.download = "diagnostic-records.csv"; a.click(); URL.revokeObjectURL(url);
@@ -515,6 +534,11 @@
                       <span className={"inline-block mt-1 text-[11px] px-2 py-0.5 rounded-full " + (r.dues > 0 ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700")}>
                         {r.dues > 0 ? "Due " + money(r.dues) : "Paid"}
                       </span>
+                      <div>
+                        <span className={"inline-block mt-1 text-[11px] px-2 py-0.5 rounded-full " + reportBadgeClass(r.report_status)}>
+                          {normalizeReport(r.report_status)}
+                        </span>
+                      </div>
                     </div>
                   </div>
                 </button>
@@ -531,12 +555,22 @@
 
     function RecordDetail({ record, session, onClose, refresh }) {
       const isAdmin = session.role === "admin";
-      const [rec, setRec] = useState(record);
+      const [rec, setRec] = useState({ ...record, report_status: normalizeReport(record.report_status) });
       const [mode, setMode] = useState("view");
       const [busy, setBusy] = useState(false);
       const [payAmt, setPayAmt] = useState(""); const [payMode, setPayMode] = useState("Cash"); const [payErr, setPayErr] = useState("");
+      const [reportErr, setReportErr] = useState("");
       const [ef, setEf] = useState(rec);
       const setE = (k) => (e) => setEf({ ...ef, [k]: e.target.value });
+
+      function mapUpdated(updated) {
+        return {
+          ...updated,
+          total: Number(updated.total), paid: Number(updated.paid), dues: Number(updated.dues),
+          payments: updated.payments || [],
+          report_status: normalizeReport(updated.report_status),
+        };
+      }
 
       async function clearDue() {
         const amt = Number(payAmt || 0);
@@ -555,9 +589,29 @@
             bill_no: rec.bill_no, patient_name: rec.customer_name,
             detail: money(amt) + " via " + payMode, amount: amt,
           });
-          setRec({ ...updated, total: Number(updated.total), paid: Number(updated.paid), dues: Number(updated.dues), payments: updated.payments || [] });
+          setRec(mapUpdated(updated));
           await refresh(); setMode("view"); setPayAmt(""); setPayErr("");
         } catch (e) { setPayErr(e.message); } finally { setBusy(false); }
+      }
+
+      async function saveReportStatus(next) {
+        const value = normalizeReport(next);
+        if (value === normalizeReport(rec.report_status)) return;
+        setBusy(true); setReportErr("");
+        try {
+          const updated = await updatePatient(rec.id, { report_status: value });
+          logActivity({
+            username: session.username, user_name: session.name, action: "edit",
+            bill_no: rec.bill_no, patient_name: rec.customer_name,
+            detail: "Report → " + value, amount: null,
+          });
+          setRec(mapUpdated(updated));
+          await refresh();
+        } catch (e) {
+          setReportErr(e.message || "Report update fail");
+        } finally {
+          setBusy(false);
+        }
       }
 
       async function saveEdit() {
@@ -566,6 +620,7 @@
           customer_name: ef.customer_name.trim(), age: Number(ef.age), sex: ef.sex, mobile: ef.mobile,
           test_name: ef.test_name.trim(), referred_by: (ef.referred_by || "").trim(), address: (ef.address || "").trim(),
           date: ef.date, total, dues, status: dues <= 0 ? "Paid" : "Pending",
+          report_status: normalizeReport(ef.report_status),
         };
         setBusy(true);
         try {
@@ -575,7 +630,7 @@
             bill_no: rec.bill_no, patient_name: patch.customer_name,
             detail: "Edited details · total " + money(total), amount: total,
           });
-          setRec({ ...updated, total: Number(updated.total), paid: Number(updated.paid), dues: Number(updated.dues), payments: updated.payments || [] });
+          setRec(mapUpdated(updated));
           await refresh(); setMode("view");
         } catch (e) { alert(e.message); } finally { setBusy(false); }
       }
@@ -612,6 +667,24 @@
                     {rec.address && <Info k="Address" v={rec.address} />}
                     <Info k="Entered By" v={rec.created_by} />
                   </div>
+                  <div className="mb-4">
+                    <Field label="Report Status">
+                      <select
+                        value={normalizeReport(rec.report_status)}
+                        disabled={busy}
+                        onChange={(e) => saveReportStatus(e.target.value)}
+                        className={inputCls}
+                      >
+                        {REPORT_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+                      </select>
+                    </Field>
+                    <div className="mt-2">
+                      <span className={"inline-block text-[11px] px-2 py-0.5 rounded-full " + reportBadgeClass(rec.report_status)}>
+                        {normalizeReport(rec.report_status)}
+                      </span>
+                    </div>
+                    {reportErr && <p className="text-sm text-red-600 mt-2">{reportErr}</p>}
+                  </div>
                   <div className="bg-slate-50 rounded-xl p-3 grid grid-cols-3 text-center mb-4">
                     <div><div className="text-xs text-slate-500">Total</div><div className="font-semibold tabular-nums">{money(rec.total)}</div></div>
                     <div><div className="text-xs text-slate-500">Paid</div><div className="font-semibold tabular-nums text-emerald-600">{money(rec.paid)}</div></div>
@@ -634,7 +707,7 @@
                     {rec.dues > 0 && <button onClick={() => setMode("clear")} className="w-full bg-teal-700 hover:bg-teal-800 text-white font-medium py-2.5 rounded-lg">Clear Dues</button>}
                     {isAdmin && (
                       <div className="grid grid-cols-2 gap-2">
-                        <button onClick={() => { setEf(rec); setMode("edit"); }} className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium py-2.5 rounded-lg">Edit</button>
+                        <button onClick={() => { setEf({ ...rec, report_status: normalizeReport(rec.report_status) }); setMode("edit"); }} className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium py-2.5 rounded-lg">Edit</button>
                         <button onClick={del} disabled={busy} className="bg-red-50 hover:bg-red-100 text-red-600 font-medium py-2.5 rounded-lg">Delete</button>
                       </div>
                     )}
@@ -671,6 +744,11 @@
                     <Field label="Test Name"><input value={ef.test_name} onChange={setE("test_name")} className={inputCls} /></Field>
                     <Field label="Referred By"><input value={ef.referred_by || ""} onChange={setE("referred_by")} className={inputCls} /></Field>
                     <Field label="Total Amount"><input value={ef.total} onChange={setE("total")} className={inputCls} /></Field>
+                    <Field label="Report Status">
+                      <select value={normalizeReport(ef.report_status)} onChange={setE("report_status")} className={inputCls}>
+                        {REPORT_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+                      </select>
+                    </Field>
                     <p className="text-xs text-slate-400">Paid ({money(rec.paid)}) fixed rahega; dues auto recalc hoga.</p>
                   </div>
                   <div className="grid grid-cols-2 gap-2 mt-4">
