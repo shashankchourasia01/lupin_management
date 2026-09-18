@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Diagnostic Center</title>
+  <title>Balajee Diagonastic</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -62,6 +62,26 @@
       return "bg-amber-100 text-amber-700";
     }
 
+    /* Admin-only: staff ne patient se paisa liya → admin ne staff se receive kiya ya nahi */
+    const ADMIN_PAY_OPTIONS = ["Payment Pending", "Payment Received"];
+    function normalizeAdminPay(v) {
+      return ADMIN_PAY_OPTIONS.includes(v) ? v : "Payment Pending";
+    }
+    function adminPayBadgeClass(v) {
+      return normalizeAdminPay(v) === "Payment Received"
+        ? "bg-emerald-100 text-emerald-700"
+        : "bg-orange-100 text-orange-700";
+    }
+
+    function fmtTime(iso) {
+      try { return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
+      catch (e) { return ""; }
+    }
+    function fmtDay(iso) {
+      try { return new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }); }
+      catch (e) { return ""; }
+    }
+
     /* -------------------- data layer (Supabase) -------------------- */
     async function listPatients() {
       const { data, error } = await db.from("patients").select("*").order("created_at", { ascending: false });
@@ -71,6 +91,7 @@
         total: Number(r.total), paid: Number(r.paid), dues: Number(r.dues),
         payments: r.payments || [],
         report_status: normalizeReport(r.report_status),
+        admin_payment_status: normalizeAdminPay(r.admin_payment_status),
       }));
     }
     async function insertPatient(rec) {
@@ -291,7 +312,7 @@
               <div className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center text-lg">🩺</div>
               <div className="leading-tight">
                 <div className="font-semibold flex items-center gap-1.5">
-                  Diagnostic Center
+                  Balajee Diagonastic
                   <span title={live ? "Live sync on" : "Connecting…"}
                     className={"inline-block w-2 h-2 rounded-full " + (live ? "bg-emerald-400" : "bg-amber-400")}></span>
                 </div>
@@ -330,6 +351,7 @@
     /* -------------------- Login -------------------- */
     function Login({ users, onLogin, err }) {
       const [u, setU] = useState(""); const [p, setP] = useState(""); const [e, setE] = useState("");
+      const [showPass, setShowPass] = useState(false);
       function submit() {
         const key = u.trim().toLowerCase();
         const found = users[key];
@@ -341,13 +363,36 @@
           <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl p-7">
             <div className="text-center mb-6">
               <div className="w-14 h-14 mx-auto rounded-2xl bg-teal-100 flex items-center justify-center text-3xl mb-3">🩺</div>
-              <h1 className="text-xl font-bold text-slate-800">Diagnostic Center</h1>
+              <h1 className="text-xl font-bold text-slate-800">Balajee Diagonastic</h1>
               <p className="text-sm text-slate-500">Sign in to continue</p>
             </div>
             <label className="block text-sm font-medium text-slate-600 mb-1">Username</label>
-            <input value={u} onChange={(ev) => setU(ev.target.value)} className={inputCls + " mb-3"} placeholder="admin / user1" />
+            <input value={u} onChange={(ev) => setU(ev.target.value)} className={inputCls + " mb-3"} placeholder="admin / user1" autoComplete="username" />
             <label className="block text-sm font-medium text-slate-600 mb-1">Password</label>
-            <input type="password" value={p} onChange={(ev) => setP(ev.target.value)} onKeyDown={(ev) => ev.key === "Enter" && submit()} className={inputCls + " mb-3"} placeholder="••••••••" />
+            <div className="relative mb-3">
+              <input
+                type={showPass ? "text" : "password"}
+                value={p}
+                onChange={(ev) => setP(ev.target.value)}
+                onKeyDown={(ev) => ev.key === "Enter" && submit()}
+                className={inputCls + " pr-11"}
+                placeholder="••••••••"
+                autoComplete="current-password"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPass((s) => !s)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-slate-500 hover:text-slate-700"
+                aria-label={showPass ? "Hide password" : "Show password"}
+                title={showPass ? "Hide" : "Show"}
+              >
+                {showPass ? (
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.8"><path strokeLinecap="round" strokeLinejoin="round" d="M3.98 8.223A10.477 10.477 0 001.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0112 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 01-4.293 5.774M6.228 6.228L3 3m3.228 3.228L3 3m3.228 3.228l3.65 3.65m7.894 7.894L21 21m-3.228-3.228l-3.65-3.65m0 0a3 3 0 10-4.243-4.243m4.242 4.242L9.88 9.88" /></svg>
+                ) : (
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.8"><path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                )}
+              </button>
+            </div>
             {(e || err) && <p className="text-sm text-red-600 mb-3">{e || err}</p>}
             <button onClick={submit} className="w-full bg-teal-700 hover:bg-teal-800 text-white font-medium py-2.5 rounded-lg">Sign in</button>
             <div className="mt-5 text-xs text-slate-400 bg-slate-50 rounded-lg p-3 leading-relaxed">
@@ -402,6 +447,7 @@
           address: f.address.trim(), total, paid: adv, dues: total - adv, mode: f.mode,
           payments, status: total - adv <= 0 ? "Paid" : "Pending",
           report_status: normalizeReport(f.report_status),
+          admin_payment_status: "Payment Pending",
           created_by: session.username,
         };
         try {
@@ -482,35 +528,68 @@
     /* -------------------- Records -------------------- */
     function Records({ records, session, refresh }) {
       const isAdmin = session.role === "admin";
-      const [q, setQ] = useState(""); const [filter, setFilter] = useState("all"); const [active, setActive] = useState(null);
+      const [q, setQ] = useState("");
+      const [filter, setFilter] = useState("all");
+      const [dateFilter, setDateFilter] = useState("");
+      const [active, setActive] = useState(null);
       const filtered = useMemo(() => {
         const term = q.trim().toLowerCase();
         return records.filter((r) => {
           const matchQ = !term || (r.customer_name || "").toLowerCase().includes(term) || (r.mobile || "").includes(term) || (r.bill_no || "").toLowerCase().includes(term);
-          const matchF = filter === "all" ? true : filter === "pending" ? r.dues > 0 : filter === "paid" ? r.dues <= 0 : filter === "today" ? r.date === today() : true;
-          return matchQ && matchF;
+          const matchF = filter === "all" ? true
+            : filter === "pending" ? r.dues > 0
+            : filter === "paid" ? r.dues <= 0
+            : filter === "today" ? r.date === today()
+            : filter === "pay_pending" ? normalizeAdminPay(r.admin_payment_status) === "Payment Pending"
+            : filter === "pay_received" ? normalizeAdminPay(r.admin_payment_status) === "Payment Received"
+            : true;
+          const matchDate = !dateFilter || r.date === dateFilter;
+          return matchQ && matchF && matchDate;
         });
-      }, [records, q, filter]);
-      const chips = [{ id: "all", label: "All" }, { id: "pending", label: "Pending" }, { id: "paid", label: "Paid" }, { id: "today", label: "Today" }];
+      }, [records, q, filter, dateFilter]);
+      const chips = [
+        { id: "all", label: "All" },
+        { id: "pending", label: "Dues Pending" },
+        { id: "paid", label: "Dues Paid" },
+        { id: "today", label: "Today" },
+      ];
+      if (isAdmin) {
+        chips.push({ id: "pay_pending", label: "Payment Pending" });
+        chips.push({ id: "pay_received", label: "Payment Received" });
+      }
 
       function exportCSV() {
-        const head = ["Bill", "Date", "Name", "Age", "Sex", "Mobile", "Test", "Referred By", "Total", "Paid", "Dues", "Status", "Report", "Entered By"];
-        const rows = records.map((r) => [r.bill_no, r.date, r.customer_name, r.age, r.sex, r.mobile, r.test_name, r.referred_by, r.total, r.paid, r.dues, r.status, normalizeReport(r.report_status), r.created_by]);
+        const head = ["Bill", "Date", "Time", "Name", "Age", "Sex", "Mobile", "Test", "Referred By", "Total", "Paid", "Dues", "Status", "Report", "Admin Payment", "Entered By"];
+        const rows = records.map((r) => [
+          r.bill_no, r.date, fmtTime(r.created_at), r.customer_name, r.age, r.sex, r.mobile, r.test_name, r.referred_by,
+          r.total, r.paid, r.dues, r.status, normalizeReport(r.report_status), normalizeAdminPay(r.admin_payment_status), r.created_by,
+        ]);
         const csv = [head, ...rows].map((row) => row.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
         const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
-        const a = document.createElement("a"); a.href = url; a.download = "diagnostic-records.csv"; a.click(); URL.revokeObjectURL(url);
+        const a = document.createElement("a"); a.href = url; a.download = "balajee-diagonastic-records.csv"; a.click(); URL.revokeObjectURL(url);
       }
 
       return (
         <div>
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-lg font-semibold">Records ({records.length})</h2>
+            <h2 className="text-lg font-semibold">Records ({filtered.length}/{records.length})</h2>
             <div className="flex gap-2">
               <button onClick={refresh} className="text-sm text-slate-600 border border-slate-200 bg-white px-3 py-1.5 rounded-lg">↻ Refresh</button>
               {isAdmin && <button onClick={exportCSV} className="text-sm text-teal-700 border border-teal-200 bg-teal-50 px-3 py-1.5 rounded-lg">Export CSV</button>}
             </div>
           </div>
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name / mobile / bill no" className={inputCls + " mb-3"} />
+          <div className="flex items-end gap-2 mb-3">
+            <label className="flex-1 block">
+              <span className="text-sm font-medium text-slate-600">Filter by date</span>
+              <input type="date" value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} className={inputCls + " mt-1"} />
+            </label>
+            {dateFilter && (
+              <button type="button" onClick={() => setDateFilter("")} className="shrink-0 mb-0.5 text-sm text-slate-600 border border-slate-200 bg-white px-3 py-2.5 rounded-lg">
+                Clear date
+              </button>
+            )}
+          </div>
           <div className="flex gap-2 mb-4 overflow-x-auto">
             {chips.map((c) => (
               <button key={c.id} onClick={() => setFilter(c.id)}
@@ -527,7 +606,9 @@
                     <div className="min-w-0">
                       <div className="font-medium text-slate-800 truncate">{r.customer_name}</div>
                       <div className="text-xs text-slate-500 mt-0.5">{r.bill_no} · {r.test_name} · {r.mobile}</div>
-                      <div className="text-xs text-slate-400 mt-0.5">{r.date} · {r.age}/{(r.sex || "-")[0]}</div>
+                      <div className="text-xs text-slate-400 mt-0.5">
+                        {r.date}{r.created_at ? " · " + fmtTime(r.created_at) : ""} · {r.age}/{(r.sex || "-")[0]}
+                      </div>
                     </div>
                     <div className="text-right shrink-0">
                       <div className="text-sm font-semibold tabular-nums">{money(r.total)}</div>
@@ -539,6 +620,13 @@
                           {normalizeReport(r.report_status)}
                         </span>
                       </div>
+                      {isAdmin && (
+                        <div>
+                          <span className={"inline-block mt-1 text-[11px] px-2 py-0.5 rounded-full " + adminPayBadgeClass(r.admin_payment_status)}>
+                            {normalizeAdminPay(r.admin_payment_status)}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </button>
@@ -555,11 +643,16 @@
 
     function RecordDetail({ record, session, onClose, refresh }) {
       const isAdmin = session.role === "admin";
-      const [rec, setRec] = useState({ ...record, report_status: normalizeReport(record.report_status) });
+      const [rec, setRec] = useState({
+        ...record,
+        report_status: normalizeReport(record.report_status),
+        admin_payment_status: normalizeAdminPay(record.admin_payment_status),
+      });
       const [mode, setMode] = useState("view");
       const [busy, setBusy] = useState(false);
       const [payAmt, setPayAmt] = useState(""); const [payMode, setPayMode] = useState("Cash"); const [payErr, setPayErr] = useState("");
       const [reportErr, setReportErr] = useState("");
+      const [adminPayErr, setAdminPayErr] = useState("");
       const [ef, setEf] = useState(rec);
       const setE = (k) => (e) => setEf({ ...ef, [k]: e.target.value });
 
@@ -569,6 +662,7 @@
           total: Number(updated.total), paid: Number(updated.paid), dues: Number(updated.dues),
           payments: updated.payments || [],
           report_status: normalizeReport(updated.report_status),
+          admin_payment_status: normalizeAdminPay(updated.admin_payment_status),
         };
       }
 
@@ -609,6 +703,27 @@
           await refresh();
         } catch (e) {
           setReportErr(e.message || "Report update fail");
+        } finally {
+          setBusy(false);
+        }
+      }
+
+      async function saveAdminPaymentStatus(next) {
+        if (!isAdmin) return;
+        const value = normalizeAdminPay(next);
+        if (value === normalizeAdminPay(rec.admin_payment_status)) return;
+        setBusy(true); setAdminPayErr("");
+        try {
+          const updated = await updatePatient(rec.id, { admin_payment_status: value });
+          logActivity({
+            username: session.username, user_name: session.name, action: "edit",
+            bill_no: rec.bill_no, patient_name: rec.customer_name,
+            detail: "Admin payment → " + value, amount: null,
+          });
+          setRec(mapUpdated(updated));
+          await refresh();
+        } catch (e) {
+          setAdminPayErr(e.message || "Payment status update fail");
         } finally {
           setBusy(false);
         }
@@ -661,7 +776,8 @@
               {mode === "view" && (
                 <React.Fragment>
                   <div className="grid grid-cols-2 gap-y-3 gap-x-4 text-sm mb-4">
-                    <Info k="Date" v={rec.date} /><Info k="Mobile" v={rec.mobile} />
+                    <Info k="Date" v={rec.date} /><Info k="Time" v={rec.created_at ? fmtTime(rec.created_at) : "-"} />
+                    <Info k="Mobile" v={rec.mobile} />
                     <Info k="Age / Sex" v={rec.age + " / " + rec.sex} /><Info k="Test" v={rec.test_name} />
                     {rec.referred_by && <Info k="Referred By" v={rec.referred_by} />}
                     {rec.address && <Info k="Address" v={rec.address} />}
@@ -685,6 +801,29 @@
                     </div>
                     {reportErr && <p className="text-sm text-red-600 mt-2">{reportErr}</p>}
                   </div>
+                  {isAdmin && (
+                    <div className="mb-4 bg-orange-50 border border-orange-100 rounded-xl p-3">
+                      <Field label="Staff se payment (Admin only)">
+                        <select
+                          value={normalizeAdminPay(rec.admin_payment_status)}
+                          disabled={busy}
+                          onChange={(e) => saveAdminPaymentStatus(e.target.value)}
+                          className={inputCls}
+                        >
+                          {ADMIN_PAY_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+                        </select>
+                      </Field>
+                      <p className="text-[11px] text-slate-500 mt-1.5">
+                        Staff ne patient se paisa liya hai — aapne staff se receive kiya ya nahi.
+                      </p>
+                      <div className="mt-2">
+                        <span className={"inline-block text-[11px] px-2 py-0.5 rounded-full " + adminPayBadgeClass(rec.admin_payment_status)}>
+                          {normalizeAdminPay(rec.admin_payment_status)}
+                        </span>
+                      </div>
+                      {adminPayErr && <p className="text-sm text-red-600 mt-2">{adminPayErr}</p>}
+                    </div>
+                  )}
                   <div className="bg-slate-50 rounded-xl p-3 grid grid-cols-3 text-center mb-4">
                     <div><div className="text-xs text-slate-500">Total</div><div className="font-semibold tabular-nums">{money(rec.total)}</div></div>
                     <div><div className="text-xs text-slate-500">Paid</div><div className="font-semibold tabular-nums text-emerald-600">{money(rec.paid)}</div></div>
@@ -805,8 +944,6 @@
       edit:      { label: "Edited",      cls: "bg-amber-100 text-amber-700" },
       delete:    { label: "Deleted",     cls: "bg-red-100 text-red-700" },
     };
-    function fmtTime(iso) { try { return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); } catch (e) { return ""; } }
-    function fmtDay(iso)  { try { return new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }); } catch (e) { return ""; } }
 
     function Activity() {
       const [rows, setRows] = useState([]);

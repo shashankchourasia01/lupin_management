@@ -25,6 +25,7 @@ create table if not exists patients (
   payments      jsonb default '[]'::jsonb,
   status        text default 'Pending',
   report_status text not null default 'Report Pending', -- Report Pending | Report Generated | Report Send
+  admin_payment_status text not null default 'Payment Pending', -- Payment Pending | Payment Received (admin only)
   created_by    text,
   created_at    timestamptz not null default now()
 );
@@ -32,6 +33,9 @@ create table if not exists patients (
 -- Live DB me column pehle se na ho to safely add (existing rows = Report Pending)
 alter table patients
   add column if not exists report_status text not null default 'Report Pending';
+
+alter table patients
+  add column if not exists admin_payment_status text not null default 'Payment Pending';
 
 create index if not exists patients_created_at_idx on patients (created_at desc);
 create index if not exists patients_mobile_idx on patients (mobile);
