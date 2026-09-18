@@ -526,36 +526,82 @@
     }
 
     /* -------------------- Records -------------------- */
+    const emptyRecordFilters = () => ({
+      name: "",
+      mobile: "",
+      billNo: "",
+      dateFrom: "",
+      dateTo: "",
+      status: "all",
+    });
+
     function Records({ records, session, refresh }) {
       const isAdmin = session.role === "admin";
-      const [q, setQ] = useState("");
-      const [filter, setFilter] = useState("all");
-      const [dateFilter, setDateFilter] = useState("");
+      const [applied, setApplied] = useState(emptyRecordFilters);
+      const [draft, setDraft] = useState(emptyRecordFilters);
+      const [openSections, setOpenSections] = useState({ name: false, mobile: false, billNo: false, date: false, status: false });
+      const [sheetOpen, setSheetOpen] = useState(false);
       const [active, setActive] = useState(null);
+
       const filtered = useMemo(() => {
-        const term = q.trim().toLowerCase();
+        const name = (applied.name || "").trim().toLowerCase();
+        const mobile = (applied.mobile || "").trim();
+        const billNo = (applied.billNo || "").trim().toLowerCase();
+        const from = applied.dateFrom || "";
+        const to = applied.dateTo || "";
+        const status = applied.status || "all";
         return records.filter((r) => {
-          const matchQ = !term || (r.customer_name || "").toLowerCase().includes(term) || (r.mobile || "").includes(term) || (r.bill_no || "").toLowerCase().includes(term);
-          const matchF = filter === "all" ? true
-            : filter === "pending" ? r.dues > 0
-            : filter === "paid" ? r.dues <= 0
-            : filter === "today" ? r.date === today()
-            : filter === "pay_pending" ? normalizeAdminPay(r.admin_payment_status) === "Payment Pending"
-            : filter === "pay_received" ? normalizeAdminPay(r.admin_payment_status) === "Payment Received"
-            : true;
-          const matchDate = !dateFilter || r.date === dateFilter;
-          return matchQ && matchF && matchDate;
+          if (name && !(r.customer_name || "").toLowerCase().includes(name)) return false;
+          if (mobile && !(r.mobile || "").includes(mobile)) return false;
+          if (billNo && !(r.bill_no || "").toLowerCase().includes(billNo)) return false;
+          if (from && r.date < from) return false;
+          if (to && r.date > to) return false;
+          if (status === "pending" && !(r.dues > 0)) return false;
+          if (status === "paid" && !(r.dues <= 0)) return false;
+          if (status === "today" && r.date !== today()) return false;
+          if (status === "pay_pending" && normalizeAdminPay(r.admin_payment_status) !== "Payment Pending") return false;
+          if (status === "pay_received" && normalizeAdminPay(r.admin_payment_status) !== "Payment Received") return false;
+          return true;
         });
-      }, [records, q, filter, dateFilter]);
-      const chips = [
-        { id: "all", label: "All" },
-        { id: "pending", label: "Dues Pending" },
-        { id: "paid", label: "Dues Paid" },
-        { id: "today", label: "Today" },
-      ];
-      if (isAdmin) {
-        chips.push({ id: "pay_pending", label: "Payment Pending" });
-        chips.push({ id: "pay_received", label: "Payment Received" });
+      }, [records, applied]);
+
+      const activeFilterCount = useMemo(() => {
+        let n = 0;
+        if ((applied.name || "").trim()) n++;
+        if ((applied.mobile || "").trim()) n++;
+        if ((applied.billNo || "").trim()) n++;
+        if (applied.dateFrom || applied.dateTo) n++;
+        if (applied.status && applied.status !== "all") n++;
+        return n;
+      }, [applied]);
+
+      function openSheet() {
+        setDraft({ ...applied });
+        setOpenSections({
+          name: !!(applied.name || "").trim(),
+          mobile: !!(applied.mobile || "").trim(),
+          billNo: !!(applied.billNo || "").trim(),
+          date: !!(applied.dateFrom || applied.dateTo),
+          status: !!(applied.status && applied.status !== "all"),
+        });
+        setSheetOpen(true);
+      }
+      function toggleSection(key) {
+        setOpenSections((s) => ({ ...s, [key]: !s[key] }));
+      }
+      function setDraftField(key, value) {
+        setDraft((d) => ({ ...d, [key]: value }));
+      }
+      function clearFilters() {
+        const blank = emptyRecordFilters();
+        setDraft(blank);
+        setApplied(blank);
+        setOpenSections({ name: false, mobile: false, billNo: false, date: false, status: false });
+        setSheetOpen(false);
+      }
+      function applyFilters() {
+        setApplied({ ...draft });
+        setSheetOpen(false);
       }
 
       function exportCSV() {
@@ -569,33 +615,62 @@
         const a = document.createElement("a"); a.href = url; a.download = "balajee-diagonastic-records.csv"; a.click(); URL.revokeObjectURL(url);
       }
 
+      const pillInput = "w-full px-4 py-2.5 rounded-full border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 placeholder:text-slate-400";
+      const statusOptions = [
+        { id: "all", label: "All" },
+        { id: "pending", label: "Dues Pending" },
+        { id: "paid", label: "Dues Paid" },
+        { id: "today", label: "Today" },
+      ];
+      if (isAdmin) {
+        statusOptions.push({ id: "pay_pending", label: "Payment Pending" });
+        statusOptions.push({ id: "pay_received", label: "Payment Received" });
+      }
+
       return (
         <div>
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center justify-between mb-3 gap-2">
             <h2 className="text-lg font-semibold">Records ({filtered.length}/{records.length})</h2>
-            <div className="flex gap-2">
-              <button onClick={refresh} className="text-sm text-slate-600 border border-slate-200 bg-white px-3 py-1.5 rounded-lg">↻ Refresh</button>
-              {isAdmin && <button onClick={exportCSV} className="text-sm text-teal-700 border border-teal-200 bg-teal-50 px-3 py-1.5 rounded-lg">Export CSV</button>}
+            <div className="flex gap-2 items-center">
+              <button
+                type="button"
+                onClick={openSheet}
+                className="relative text-sm text-slate-700 border border-slate-200 bg-white px-3 py-1.5 rounded-lg flex items-center gap-1.5"
+                title="Filters"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 4h18M6 12h12M10 20h4" />
+                </svg>
+                Filter
+                {activeFilterCount > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-teal-700 text-white text-[10px] flex items-center justify-center">
+                    {activeFilterCount}
+                  </span>
+                )}
+              </button>
+              <button onClick={refresh} className="text-sm text-slate-600 border border-slate-200 bg-white px-3 py-1.5 rounded-lg">↻</button>
+              {isAdmin && <button onClick={exportCSV} className="text-sm text-teal-700 border border-teal-200 bg-teal-50 px-3 py-1.5 rounded-lg">Export</button>}
             </div>
           </div>
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name / mobile / bill no" className={inputCls + " mb-3"} />
-          <div className="flex items-end gap-2 mb-3">
-            <label className="flex-1 block">
-              <span className="text-sm font-medium text-slate-600">Filter by date</span>
-              <input type="date" value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} className={inputCls + " mt-1"} />
-            </label>
-            {dateFilter && (
-              <button type="button" onClick={() => setDateFilter("")} className="shrink-0 mb-0.5 text-sm text-slate-600 border border-slate-200 bg-white px-3 py-2.5 rounded-lg">
-                Clear date
-              </button>
-            )}
-          </div>
-          <div className="flex gap-2 mb-4 overflow-x-auto">
-            {chips.map((c) => (
-              <button key={c.id} onClick={() => setFilter(c.id)}
-                className={"px-3 py-1.5 rounded-full text-sm whitespace-nowrap border " + (filter === c.id ? "bg-teal-700 text-white border-teal-700" : "bg-white text-slate-600 border-slate-200")}>{c.label}</button>
-            ))}
-          </div>
+
+          {activeFilterCount > 0 && (
+            <div className="mb-3 flex flex-wrap gap-1.5">
+              {!!(applied.name || "").trim() && <span className="text-[11px] bg-slate-100 text-slate-600 px-2 py-1 rounded-full">Name: {applied.name}</span>}
+              {!!(applied.mobile || "").trim() && <span className="text-[11px] bg-slate-100 text-slate-600 px-2 py-1 rounded-full">Mobile: {applied.mobile}</span>}
+              {!!(applied.billNo || "").trim() && <span className="text-[11px] bg-slate-100 text-slate-600 px-2 py-1 rounded-full">Bill: {applied.billNo}</span>}
+              {(applied.dateFrom || applied.dateTo) && (
+                <span className="text-[11px] bg-slate-100 text-slate-600 px-2 py-1 rounded-full">
+                  Date: {applied.dateFrom || "…"} → {applied.dateTo || "…"}
+                </span>
+              )}
+              {applied.status && applied.status !== "all" && (
+                <span className="text-[11px] bg-teal-50 text-teal-700 px-2 py-1 rounded-full">
+                  {(statusOptions.find((s) => s.id === applied.status) || {}).label || applied.status}
+                </span>
+              )}
+            </div>
+          )}
+
           {filtered.length === 0 ? (
             <div className="text-center text-slate-400 py-16 text-sm">Koi record nahi mila.</div>
           ) : (
@@ -633,6 +708,95 @@
               ))}
             </div>
           )}
+
+          {sheetOpen && (
+            <div className="fixed inset-0 z-40 flex items-end sm:items-center justify-center">
+              <div className="absolute inset-0 bg-black/40" onClick={() => setSheetOpen(false)} />
+              <div className="relative bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl max-h-[88vh] flex flex-col shadow-xl">
+                <div className="flex items-center justify-center px-4 py-3 border-b border-slate-100 relative">
+                  <h3 className="text-base font-bold text-slate-800">Filters</h3>
+                  <button type="button" onClick={() => setSheetOpen(false)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 text-xl px-2">✕</button>
+                </div>
+
+                <div className="overflow-y-auto px-5 py-2 flex-1">
+                  {[
+                    { key: "name", label: "Name", field: "name", placeholder: "Patient name" },
+                    { key: "mobile", label: "Mobile", field: "mobile", placeholder: "10 digit mobile" },
+                    { key: "billNo", label: "Bill No", field: "billNo", placeholder: "e.g. INV-0001" },
+                  ].map((row) => (
+                    <div key={row.key} className="border-b border-slate-100 py-3">
+                      <button type="button" onClick={() => toggleSection(row.key)} className="w-full flex items-center justify-between">
+                        <span className="font-semibold text-slate-800">{row.label}</span>
+                        <span className="text-slate-400 text-xl leading-none">{openSections[row.key] ? "−" : "+"}</span>
+                      </button>
+                      {openSections[row.key] && (
+                        <div className="mt-3">
+                          <input
+                            value={draft[row.field]}
+                            onChange={(e) => setDraftField(row.field, e.target.value)}
+                            placeholder={row.placeholder}
+                            className={pillInput}
+                            inputMode={row.key === "mobile" ? "numeric" : "text"}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  ))}
+
+                  <div className="border-b border-slate-100 py-3">
+                    <button type="button" onClick={() => toggleSection("date")} className="w-full flex items-center justify-between">
+                      <span className="font-semibold text-slate-800">Date</span>
+                      <span className="text-slate-400 text-xl leading-none">{openSections.date ? "−" : "+"}</span>
+                    </button>
+                    {openSections.date && (
+                      <div className="mt-3">
+                        <div className="text-sm font-semibold text-slate-800 mb-2">Date Range</div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <input type="date" value={draft.dateFrom} onChange={(e) => setDraftField("dateFrom", e.target.value)} className={pillInput} title="From" />
+                          <input type="date" value={draft.dateTo} onChange={(e) => setDraftField("dateTo", e.target.value)} className={pillInput} title="To" />
+                        </div>
+                        <div className="grid grid-cols-2 gap-3 mt-1 px-1">
+                          <span className="text-[11px] text-slate-400">From</span>
+                          <span className="text-[11px] text-slate-400">To</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="py-3">
+                    <button type="button" onClick={() => toggleSection("status")} className="w-full flex items-center justify-between">
+                      <span className="font-semibold text-slate-800">Status</span>
+                      <span className="text-slate-400 text-xl leading-none">{openSections.status ? "−" : "+"}</span>
+                    </button>
+                    {openSections.status && (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {statusOptions.map((opt) => (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => setDraftField("status", opt.id)}
+                            className={"px-3 py-1.5 rounded-full text-sm border " + (draft.status === opt.id ? "bg-teal-700 text-white border-teal-700" : "bg-white text-slate-600 border-slate-200")}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="p-4 border-t border-slate-100 grid grid-cols-2 gap-3">
+                  <button type="button" onClick={clearFilters} className="bg-teal-600 hover:bg-teal-700 text-white font-semibold tracking-wide py-3 rounded-xl shadow-sm">
+                    CLEAR
+                  </button>
+                  <button type="button" onClick={applyFilters} className="bg-teal-600 hover:bg-teal-700 text-white font-semibold tracking-wide py-3 rounded-xl shadow-sm">
+                    APPLY
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {active && <RecordDetail record={active} session={session} onClose={() => setActive(null)} refresh={refresh} />}
         </div>
       );
